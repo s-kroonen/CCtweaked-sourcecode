@@ -24,28 +24,52 @@ config.liftSources = {
 -- controller: peripheral name of the upstream Create_RotationSpeedController.
 config.propellers = {
     {
-        id         = "propeller_front",
-        controller = "rsc_front",
-        facing     = "north",           -- pushes craft toward -Z
-        position   = {x =  0, z =  2},
+        id         = "propeller_front_right_left",
+        controller = "Create_RotationSpeedController_10",
+        facing     = "north",
+        position   = {x =  15, z =  14},
     },
     {
-        id         = "propeller_back",
-        controller = "rsc_back",
-        facing     = "south",           -- pushes craft toward +Z (reverse for forward)
-        position   = {x =  0, z = -2},
+        id         = "propeller_front_right_backward",
+        controller = "Create_RotationSpeedController_5",
+        facing     = "west",
+        position   = {x =  19, z =  11},
     },
     {
-        id         = "propeller_right",
-        controller = "rsc_right",
-        facing     = "east",            -- pushes craft toward +X
-        position   = {x = -2, z =  0},
+        id         = "propeller_front_left_backward",
+        controller = "Create_RotationSpeedController_7",
+        facing     = "west",
+        position   = {x =  19, z = -11},
     },
     {
-        id         = "propeller_left",
-        controller = "rsc_left",
-        facing     = "west",            -- pushes craft toward -X
-        position   = {x =  2, z =  0},
+        id         = "propeller_front_left_right",
+        controller = "Create_RotationSpeedController_9",
+        facing     = "south",
+        position   = {x =  15, z =  -14},
+    },
+    {
+        id         = "propeller_back_right_forward",
+        controller = "Create_RotationSpeedController_3",
+        facing     = "east", 
+        position   = {x =  -19, z = 14},
+    },
+    {
+        id         = "propeller_back_left_forward",
+        controller = "Create_RotationSpeedController_1",
+        facing     = "east", 
+        position   = {x = -19, z = -11},
+    },
+    {
+        id         = "propeller_back_left_right",
+        controller = "Create_RotationSpeedController_11",
+        facing     = "south",
+        position   = {x =  -15, z = -14},
+    },
+    {
+        id         = "propeller_back_right_left",
+        controller = "Create_RotationSpeedController_8",
+        facing     = "north",
+        position   = {x = -15, z = 14},
     },
     -- Example: add an up-facing prop for extra lift assist
     -- {

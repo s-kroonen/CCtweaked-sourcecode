@@ -1,6 +1,6 @@
 -- install.lua
 -- Run once in-game to download the full blimp controller from GitHub.
--- Usage:  wget run https://raw.githubusercontent.com/YOU/REPO/main/install.lua
+-- Usage:  wget run https://raw.githubusercontent.com/s-kroonen/CCtweaked-sourcecode/master/install.lua
 
 local REPO  = "https://raw.githubusercontent.com/s-kroonen/CCtweaked-sourcecode/master"
 
