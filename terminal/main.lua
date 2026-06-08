@@ -1,18 +1,25 @@
 -- terminal/main.lua
--- Pocket-computer blimp config tool.
--- Navigate with arrow keys.  Enter = select/edit.  Backspace = back.
+-- Pocket-computer blimp config tool built with Basalt 2.
+-- Install Basalt first:  wget run https://basalt.madefor.cc/install.lua packed
 
-local gui   = require("terminal.gui")
-local comms = require("terminal.comms")
+-- ── Basalt check ──────────────────────────────────────────────────────────────
+if not fs.exists("basalt.lua") and not fs.exists("basalt") then
+    printError("Basalt is not installed.")
+    printError("Run: wget run https://basalt.madefor.cc/install.lua packed")
+    printError("Then reboot and try again.")
+    return
+end
 
-local W, H = gui.size()
+local basalt = require("basalt")
+local comms  = require("terminal.comms")
 
--- ── State ─────────────────────────────────────────────────────────────────────
+local W, H = term.getSize()
 
+-- ── Config data (working copy in memory) ──────────────────────────────────────
 local data = {
     liftSources = {},
     propellers  = {},
-    sensors     = {
+    sensors = {
         altitude = "altitude_sensor_0",
         gimbal   = "gimbal_sensor_0",
         velocity = {},
@@ -25,464 +32,597 @@ local data = {
         maxYaw              = 0.6,
     },
 }
-local connected = false
-local statusMsg = "Not connected"
 
--- ── Helpers ───────────────────────────────────────────────────────────────────
-
-local function setStatus(msg) statusMsg = msg end
-
-local function clampStr(s, n)
-    return tostring(s or ""):sub(1, n)
-end
-
--- Draw a two-button footer: left=A label, right=B label
-local function footer(left, right)
-    term.setCursorPos(1, H)
-    term.setBackgroundColor(gui.COL.ok)
-    term.setTextColor(gui.COL.okTx)
-    local l = (" " .. left  .. " "):sub(1, math.floor(W / 2))
-    term.write(l .. string.rep(" ", math.floor(W / 2) - #l))
-    term.setBackgroundColor(gui.COL.cancel)
-    term.setTextColor(gui.COL.cancelTx)
-    local r = (" " .. right .. " "):sub(1, W - math.floor(W / 2))
-    term.write(r .. string.rep(" ", W - math.floor(W / 2) - #r))
-    term.setBackgroundColor(gui.COL.bg)
-    term.setTextColor(gui.COL.itemTx)
-end
-
--- ── Position calculator screen ────────────────────────────────────────────────
--- Enter world coords for center and for the block; returns {x, z} relative.
-local function posCalc(currentPos)
-    local cx, cz = 0, 0
-    local bx, bz = currentPos and currentPos.x or 0,
-                   currentPos and currentPos.z or 0
-
-    while true do
-        gui.clear()
-        gui.header("Pos Calculator")
-        term.setCursorPos(1, 3)
-        term.setTextColor(gui.COL.labelTx)
-        term.write("Craft center (world XZ):")
-        gui.fieldRow("Center X", cx, 4, false)
-        gui.fieldRow("Center Z", cz, 5, false)
-        term.setCursorPos(1, 7)
-        term.write("Block (world XZ):")
-        gui.fieldRow("Block X",  bx, 8, false)
-        gui.fieldRow("Block Z",  bz, 9, false)
-        term.setCursorPos(1, 11)
-        term.setTextColor(gui.COL.ok)
-        term.write(string.format("Relative: x=%-6s z=%s",
-            tostring(bx - cx), tostring(bz - cz)))
-        gui.status("E=edit  Enter=confirm  Bksp=back")
-
-        local _, key = os.pullEvent("key")
-        if key == keys.e then
-            cx = tonumber(gui.prompt("Ctr X", cx, 4)) or cx
-            cz = tonumber(gui.prompt("Ctr Z", cz, 5)) or cz
-            bx = tonumber(gui.prompt("Blk X", bx, 8)) or bx
-            bz = tonumber(gui.prompt("Blk Z", bz, 9)) or bz
-        elseif key == keys.enter then
-            return {x = bx - cx, z = bz - cz}
-        elseif key == keys.backspace then
-            return currentPos
-        end
-    end
-end
-
--- ── Propeller editor ──────────────────────────────────────────────────────────
-local PROP_FIELDS = {"id","controller","facing","pos_x","pos_z"}
-local PROP_LABELS = {id="ID", controller="Ctrl", facing="Facing",
-                     pos_x="Pos X", pos_z="Pos Z"}
-
-local function editPropeller(prop)
-    prop = prop or {id="",controller="",facing="north",position={x=0,z=0}}
-    -- working copy
-    local p = {
-        id         = prop.id or "",
-        controller = prop.controller or "",
-        facing     = prop.facing or "north",
-        pos_x      = tostring(prop.position and prop.position.x or 0),
-        pos_z      = tostring(prop.position and prop.position.z or 0),
-    }
-    local sel = 1
-
-    while true do
-        gui.clear()
-        gui.header("Edit Propeller")
-        for i, key in ipairs(PROP_FIELDS) do
-            gui.fieldRow(PROP_LABELS[key], p[key], i + 2, i == sel)
-        end
-        -- Pos calculator shortcut row
-        term.setCursorPos(1, #PROP_FIELDS + 4)
-        term.setBackgroundColor(gui.COL.field)
-        term.setTextColor(gui.COL.fieldTx)
-        term.write(" C = open position calculator ")
-        term.setBackgroundColor(gui.COL.bg)
-        footer("Save (Enter)", "Cancel (Bksp)")
-
-        local _, key = os.pullEvent("key")
-
-        if key == keys.up   then sel = math.max(1, sel - 1)
-        elseif key == keys.down  then sel = math.min(#PROP_FIELDS, sel + 1)
-        elseif key == keys.backspace then return nil  -- cancel
-
-        elseif key == keys.c then
-            local r = posCalc({x = tonumber(p.pos_x) or 0,
-                               z = tonumber(p.pos_z) or 0})
-            if r then p.pos_x = tostring(r.x); p.pos_z = tostring(r.z) end
-
-        elseif key == keys.enter then
-            local field = PROP_FIELDS[sel]
-            if field == "facing" then
-                local f = gui.pickFacing(p.facing)
-                if f then p.facing = f end
-            else
-                p[field] = gui.prompt(PROP_LABELS[field], p[field],
-                                      sel + 2) or p[field]
-            end
-
-        elseif key == keys.s then
-            -- s = save from anywhere in the form
-            local ok2 = p.id ~= "" and p.controller ~= ""
-            if not ok2 then
-                setStatus("ID and Ctrl required")
-            else
-                return {
-                    id         = p.id,
-                    controller = p.controller,
-                    facing     = p.facing,
-                    position   = {
-                        x = tonumber(p.pos_x) or 0,
-                        z = tonumber(p.pos_z) or 0,
-                    },
-                }
-            end
-        end
-    end
-end
-
--- ── Lift source editor ────────────────────────────────────────────────────────
-local function editLiftSource(src)
-    src = src or {id="",position={x=0,z=0}}
-    local p = {
-        id    = src.id or "",
-        pos_x = tostring(src.position and src.position.x or 0),
-        pos_z = tostring(src.position and src.position.z or 0),
-    }
-    local fields  = {"id","pos_x","pos_z"}
-    local labels  = {id="ID", pos_x="Pos X", pos_z="Pos Z"}
-    local sel = 1
-
-    while true do
-        gui.clear()
-        gui.header("Edit Lift Source")
-        for i, key in ipairs(fields) do
-            gui.fieldRow(labels[key], p[key], i + 2, i == sel)
-        end
-        term.setCursorPos(1, #fields + 4)
-        term.setBackgroundColor(gui.COL.field)
-        term.setTextColor(gui.COL.fieldTx)
-        term.write(" C = open position calculator ")
-        term.setBackgroundColor(gui.COL.bg)
-        footer("Save (S key)", "Cancel (Bksp)")
-
-        local _, key = os.pullEvent("key")
-        if key == keys.up   then sel = math.max(1, sel - 1)
-        elseif key == keys.down  then sel = math.min(#fields, sel + 1)
-        elseif key == keys.backspace then return nil
-        elseif key == keys.c then
-            local r = posCalc({x = tonumber(p.pos_x) or 0,
-                               z = tonumber(p.pos_z) or 0})
-            if r then p.pos_x = tostring(r.x); p.pos_z = tostring(r.z) end
-        elseif key == keys.enter then
-            p[fields[sel]] = gui.prompt(labels[fields[sel]], p[fields[sel]],
-                                        sel + 2) or p[fields[sel]]
-        elseif key == keys.s then
-            if p.id == "" then setStatus("ID required") else
-                return {
-                    id       = p.id,
-                    position = {x = tonumber(p.pos_x) or 0,
-                                z = tonumber(p.pos_z) or 0},
-                }
-            end
-        end
-    end
-end
-
--- ── Generic list manager ──────────────────────────────────────────────────────
--- items: list, title: string, editFn: function(item)->item|nil
-local function listScreen(title, items, editFn)
-    local sel = math.max(1, math.min(#items, 1))
-
-    local function makeLabels()
-        local out = {}
-        for i, item in ipairs(items) do
-            local label = clampStr(item.id, 18)
-            if item.facing then
-                label = label .. "  " .. item.facing
-            end
-            out[i] = label
-        end
-        return out
-    end
-
-    while true do
-        local labels = makeLabels()
-        gui.clear()
-        gui.header(title .. " (" .. #items .. ")")
-        local listEnd = H - 2
-        if #items > 0 then
-            gui.drawList(labels, sel, 2, listEnd)
-        else
-            term.setCursorPos(1, 3)
-            term.setTextColor(gui.COL.labelTx)
-            term.write("  (empty — press A to add)")
-        end
-        gui.status("A=add  E=edit  D=del  Bksp=back")
-
-        local _, key = os.pullEvent("key")
-        if key == keys.backspace then
-            return items
-
-        elseif key == keys.up then
-            sel = math.max(1, sel - 1)
-        elseif key == keys.down then
-            sel = math.min(math.max(#items, 1), sel + 1)
-
-        elseif key == keys.a then
-            local newItem = editFn(nil)
-            if newItem then
-                items[#items + 1] = newItem
-                sel = #items
-                setStatus("Added " .. tostring(newItem.id))
-            end
-
-        elseif key == keys.e then
-            if items[sel] then
-                local edited = editFn(items[sel])
-                if edited then
-                    items[sel] = edited
-                    setStatus("Saved " .. tostring(edited.id))
-                end
-            end
-
-        elseif key == keys.d then
-            if items[sel] and gui.confirm("Delete " .. clampStr(items[sel].id, 14) .. "?") then
-                table.remove(items, sel)
-                sel = math.max(1, math.min(#items, sel))
-                setStatus("Deleted")
-            end
-        end
-    end
-end
-
--- ── Sensors screen ────────────────────────────────────────────────────────────
-local SENS_FIELDS = {"altitude","gimbal","vel0","vel1","vel2"}
-local SENS_LABELS = {altitude="Alt sens", gimbal="Gimbal",
-                     vel0="Vel X", vel1="Vel Y", vel2="Vel Z"}
-
-local function sensorsScreen()
-    local s = data.sensors
-    local p = {
-        altitude = s.altitude or "",
-        gimbal   = s.gimbal   or "",
-        vel0     = s.velocity and s.velocity[1] or "",
-        vel1     = s.velocity and s.velocity[2] or "",
-        vel2     = s.velocity and s.velocity[3] or "",
-    }
-    local sel = 1
-
-    while true do
-        gui.clear()
-        gui.header("Sensors")
-        for i, key in ipairs(SENS_FIELDS) do
-            gui.fieldRow(SENS_LABELS[key], p[key], i + 2, i == sel)
-        end
-        footer("Save (S key)", "Cancel (Bksp)")
-
-        local _, key = os.pullEvent("key")
-        if key == keys.up   then sel = math.max(1, sel - 1)
-        elseif key == keys.down  then sel = math.min(#SENS_FIELDS, sel + 1)
-        elseif key == keys.backspace then return
-        elseif key == keys.enter then
-            local f = SENS_FIELDS[sel]
-            p[f] = gui.prompt(SENS_LABELS[f], p[f], sel + 2) or p[f]
-        elseif key == keys.s then
-            data.sensors = {
-                altitude = p.altitude,
-                gimbal   = p.gimbal,
-                velocity = {p.vel0, p.vel1, p.vel2},
-            }
-            setStatus("Sensors saved")
-            return
-        end
-    end
-end
-
--- ── Input devices screen ──────────────────────────────────────────────────────
-local INP_FIELDS = {"steeringWheel","throttleLever","altitudeRatePerUnit",
-                    "maxTranslation","maxYaw"}
-local INP_LABELS = {steeringWheel="Wheel", throttleLever="Lever",
-                    altitudeRatePerUnit="AltRate", maxTranslation="MaxTrans",
-                    maxYaw="MaxYaw"}
-
-local function inputScreen()
-    local inp = data.input
-    local p = {}
-    for _, f in ipairs(INP_FIELDS) do
-        p[f] = tostring(inp[f] or "")
-    end
-    local sel = 1
-
-    while true do
-        gui.clear()
-        gui.header("Input Devices")
-        for i, key in ipairs(INP_FIELDS) do
-            gui.fieldRow(INP_LABELS[key], p[key], i + 2, i == sel)
-        end
-        footer("Save (S key)", "Cancel (Bksp)")
-
-        local _, key = os.pullEvent("key")
-        if key == keys.up   then sel = math.max(1, sel - 1)
-        elseif key == keys.down  then sel = math.min(#INP_FIELDS, sel + 1)
-        elseif key == keys.backspace then return
-        elseif key == keys.enter then
-            local f = INP_FIELDS[sel]
-            p[f] = gui.prompt(INP_LABELS[f], p[f], sel + 2) or p[f]
-        elseif key == keys.s then
-            data.input = {
-                steeringWheel       = p.steeringWheel,
-                throttleLever       = p.throttleLever,
-                altitudeRatePerUnit = tonumber(p.altitudeRatePerUnit) or 0.5,
-                maxTranslation      = tonumber(p.maxTranslation) or 0.8,
-                maxYaw              = tonumber(p.maxYaw) or 0.6,
-            }
-            setStatus("Input saved")
-            return
-        end
-    end
-end
-
--- ── Main menu ─────────────────────────────────────────────────────────────────
-local MENU = {
-    "Connect to ship",
-    "Lift sources",
-    "Propellers",
-    "Sensors",
-    "Input devices",
-    "─────────────",
-    "Push to ship",
-    "Pull from ship",
-    "Save locally",
+-- ── Colours ───────────────────────────────────────────────────────────────────
+local COL = {
+    bg      = colours.black,
+    tx      = colours.white,
+    hdr     = colours.blue,
+    hdrTx   = colours.white,
+    btn     = colours.grey,
+    btnTx   = colours.white,
+    ok      = colours.green,
+    okTx    = colours.black,
+    danger  = colours.red,
+    dangerTx= colours.white,
+    field   = colours.grey,
+    sub     = colours.lightGrey,
+    statusTx= colours.yellow,
+    conn    = colours.lime,
+    noconn  = colours.red,
 }
 
-local function mainMenu()
-    local sel = 1
-    while true do
-        gui.clear()
-        gui.header("Blimp Config")
-        -- Connection line
-        term.setCursorPos(1, 2)
-        term.setTextColor(connected and gui.COL.ok or gui.COL.cancel)
-        term.setBackgroundColor(gui.COL.bg)
-        local shipTxt = connected
-            and "Ship #" .. tostring(comms.shipId())
-            or  "Not connected"
-        term.write((" Ship: " .. shipTxt):sub(1, W))
-        term.setTextColor(gui.COL.itemTx)
+-- ── Facing cycle ──────────────────────────────────────────────────────────────
+local FACINGS = {"north","south","east","west","up","down"}
+local function nextFacing(f)
+    for i, v in ipairs(FACINGS) do
+        if v == f then return FACINGS[i % #FACINGS + 1] end
+    end
+    return "north"
+end
 
-        local labels = {}
-        for _, v in ipairs(MENU) do labels[#labels+1] = "  " .. v end
-        gui.drawList(labels, sel, 3, H - 1)
-        gui.status(statusMsg:sub(1, W))
+-- ── Frame registry & screen switcher ─────────────────────────────────────────
+local allFrames = {}
+local function switchTo(frame)
+    for _, f in ipairs(allFrames) do f:setVisible(false) end
+    frame:setVisible(true)
+end
 
-        local _, key = os.pullEvent("key")
-        if key == keys.up   then
-            sel = math.max(1, sel - 1)
-            if MENU[sel]:sub(1,1) == "─" then sel = math.max(1, sel - 1) end
-        elseif key == keys.down then
-            sel = math.min(#MENU, sel + 1)
-            if MENU[sel] and MENU[sel]:sub(1,1) == "─" then
-                sel = math.min(#MENU, sel + 1)
+-- ── Root BaseFrame ────────────────────────────────────────────────────────────
+local root = basalt.getMainFrame():setBackground(COL.bg)
+
+-- ── Shared element builders ───────────────────────────────────────────────────
+local function addHeader(frame, title)
+    frame:addLabel()
+        :setPosition(1, 1):setSize(W, 1)
+        :setBackground(COL.hdr):setForeground(COL.hdrTx)
+        :setText(title)
+end
+
+local function addBtn(frame, text, x, y, w, bg, fg, cb)
+    return frame:addButton()
+        :setPosition(x, y):setSize(w, 1)
+        :setBackground(bg):setForeground(fg)
+        :setText(text)
+        :onClick(cb)
+end
+
+local function addLbl(frame, text, x, y, w, fg, bg)
+    return frame:addLabel()
+        :setPosition(x, y):setSize(w or W - x + 1, 1)
+        :setBackground(bg or COL.bg):setForeground(fg or COL.tx)
+        :setText(text)
+end
+
+local function addInp(frame, x, y, w, placeholder)
+    return frame:addInput()
+        :setPosition(x, y):setSize(w, 1)
+        :setBackground(COL.field):setForeground(COL.tx)
+        :setPlaceholder(placeholder or "")
+end
+
+-- ── Status label (shared, lives on root, always visible) ─────────────────────
+local statusLbl = root:addLabel()
+    :setPosition(1, H):setSize(W, 1)
+    :setBackground(COL.bg):setForeground(COL.statusTx)
+    :setText("Starting...")
+
+local function setStatus(msg)
+    statusLbl:setText(tostring(msg):sub(1, W))
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- POSITION CALCULATOR SCREEN
+-- ═══════════════════════════════════════════════════════════════════════════════
+local posCalcFrame = root:addFrame()
+    :setPosition(1, 1):setSize(W, H - 1)
+    :setBackground(COL.bg):setVisible(false)
+allFrames[#allFrames+1] = posCalcFrame
+
+local _posCalcCB = nil   -- callback(relX, relZ) or (nil) on cancel
+
+local posCalcInputs = {}
+local posCalcResult
+
+do
+    addHeader(posCalcFrame, "Position Calc")
+    addLbl(posCalcFrame, "Craft center (world XZ):", 1, 2, W, COL.sub)
+    addLbl(posCalcFrame, "X:", 1, 3, 3, COL.sub)
+    posCalcInputs.cx = addInp(posCalcFrame, 3, 3, 10, "0")
+    addLbl(posCalcFrame, "Z:", 14, 3, 3, COL.sub)
+    posCalcInputs.cz = addInp(posCalcFrame, 16, 3, 10, "0")
+
+    addLbl(posCalcFrame, "Block position (world XZ):", 1, 5, W, COL.sub)
+    addLbl(posCalcFrame, "X:", 1, 6, 3, COL.sub)
+    posCalcInputs.bx = addInp(posCalcFrame, 3, 6, 10, "0")
+    addLbl(posCalcFrame, "Z:", 14, 6, 3, COL.sub)
+    posCalcInputs.bz = addInp(posCalcFrame, 16, 6, 10, "0")
+
+    posCalcResult = addLbl(posCalcFrame, "Relative: x=0  z=0", 1, 8, W, COL.ok)
+
+    local function recalc()
+        local cx = tonumber(posCalcInputs.cx:getText()) or 0
+        local cz = tonumber(posCalcInputs.cz:getText()) or 0
+        local bx = tonumber(posCalcInputs.bx:getText()) or 0
+        local bz = tonumber(posCalcInputs.bz:getText()) or 0
+        posCalcResult:setText(string.format("Relative: x=%d  z=%d", bx-cx, bz-cz))
+    end
+
+    posCalcInputs.cx:onChange("text", recalc)
+    posCalcInputs.cz:onChange("text", recalc)
+    posCalcInputs.bx:onChange("text", recalc)
+    posCalcInputs.bz:onChange("text", recalc)
+
+    addBtn(posCalcFrame, "Apply", 1, 10, 7, COL.ok, COL.okTx, function()
+        local cx = tonumber(posCalcInputs.cx:getText()) or 0
+        local cz = tonumber(posCalcInputs.cz:getText()) or 0
+        local bx = tonumber(posCalcInputs.bx:getText()) or 0
+        local bz = tonumber(posCalcInputs.bz:getText()) or 0
+        if _posCalcCB then _posCalcCB(bx - cx, bz - cz) end
+    end)
+    addBtn(posCalcFrame, "Cancel", 10, 10, 8, COL.btn, COL.btnTx, function()
+        if _posCalcCB then _posCalcCB(nil) end
+    end)
+end
+
+local function openPosCalc(curX, curZ, returnFrame, callback)
+    _posCalcCB = function(rx, rz)
+        _posCalcCB = nil
+        switchTo(returnFrame)
+        if rx ~= nil and callback then callback(rx, rz) end
+    end
+    -- pre-fill block position with current values
+    posCalcInputs.bx:setText(tostring(curX or 0))
+    posCalcInputs.bz:setText(tostring(curZ or 0))
+    switchTo(posCalcFrame)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- PROPELLER EDIT SCREEN
+-- ═══════════════════════════════════════════════════════════════════════════════
+local propEditFrame = root:addFrame()
+    :setPosition(1, 1):setSize(W, H - 1)
+    :setBackground(COL.bg):setVisible(false)
+allFrames[#allFrames+1] = propEditFrame
+
+local propEditInputs = {}
+local propFacingBtn
+local propFacingVal = "north"
+local propEditIndex = nil
+
+local function refreshPropFacingBtn()
+    propFacingBtn:setText("Facing: " .. propFacingVal .. " (click to cycle)")
+end
+
+do
+    addHeader(propEditFrame, "Edit Propeller")
+    addLbl(propEditFrame, "Peripheral ID:", 1, 2, W, COL.sub)
+    propEditInputs.id = addInp(propEditFrame, 1, 3, W, "propeller_0")
+
+    addLbl(propEditFrame, "Speed controller ID:", 1, 4, W, COL.sub)
+    propEditInputs.controller = addInp(propEditFrame, 1, 5, W, "Create_RotationSpeedController_0")
+
+    addLbl(propEditFrame, "Facing direction:", 1, 6, W, COL.sub)
+    propFacingBtn = addBtn(propEditFrame,
+        "Facing: north (click to cycle)", 1, 7, W, COL.field, COL.tx,
+        function()
+            propFacingVal = nextFacing(propFacingVal)
+            refreshPropFacingBtn()
+        end)
+
+    addLbl(propEditFrame, "Relative position from craft center:", 1, 8, W, COL.sub)
+    addLbl(propEditFrame, "X:", 1, 9, 2, COL.sub)
+    propEditInputs.pos_x = addInp(propEditFrame, 3, 9, 10, "0")
+    addLbl(propEditFrame, "Z:", 14, 9, 2, COL.sub)
+    propEditInputs.pos_z = addInp(propEditFrame, 16, 9, 10, "0")
+
+    addBtn(propEditFrame, "[Pos Calc]", 1, 10, 11, COL.btn, COL.btnTx, function()
+        openPosCalc(
+            tonumber(propEditInputs.pos_x:getText()) or 0,
+            tonumber(propEditInputs.pos_z:getText()) or 0,
+            propEditFrame,
+            function(rx, rz)
+                propEditInputs.pos_x:setText(tostring(rx))
+                propEditInputs.pos_z:setText(tostring(rz))
             end
-        elseif key == keys.enter then
-            local choice = MENU[sel]
+        )
+    end)
 
-            if choice == "Connect to ship" then
-                setStatus("Scanning...")
-                gui.clear(); gui.header("Connecting...")
-                term.setCursorPos(1,3); term.write("Broadcasting ping...")
-                local id = comms.findShip()
-                if id then
-                    connected = true
-                    setStatus("Connected to #" .. id)
-                else
-                    connected = false
-                    setStatus("No ship found")
-                end
-
-            elseif choice == "Lift sources" then
-                data.liftSources = listScreen("Lift Sources",
-                    data.liftSources, editLiftSource)
-
-            elseif choice == "Propellers" then
-                data.propellers = listScreen("Propellers",
-                    data.propellers, editPropeller)
-
-            elseif choice == "Sensors" then
-                sensorsScreen()
-
-            elseif choice == "Input devices" then
-                inputScreen()
-
-            elseif choice == "Push to ship" then
-                if not connected then
-                    setStatus("Connect first")
-                else
-                    local ok, err = comms.setConfig(data)
-                    setStatus(ok and "Pushed OK" or ("Push failed: " .. tostring(err)))
-                end
-
-            elseif choice == "Pull from ship" then
-                if not connected then
-                    setStatus("Connect first")
-                else
-                    local d, err = comms.getConfig()
-                    if d then
-                        data = d
-                        setStatus("Pulled OK")
-                    else
-                        setStatus("Pull failed: " .. tostring(err))
-                    end
-                end
-
-            elseif choice == "Save locally" then
-                local f = fs.open("config_data.lua", "w")
-                f.write("return " .. textutils.serialize(data))
-                f.close()
-                setStatus("Saved to config_data.lua")
-            end
+    addBtn(propEditFrame, "Save", 1, 12, 6, COL.ok, COL.okTx, function()
+        local id   = propEditInputs.id:getText()
+        local ctrl = propEditInputs.controller:getText()
+        if id == "" or ctrl == "" then
+            setStatus("ID and controller are required")
+            return
         end
+        local entry = {
+            id         = id,
+            controller = ctrl,
+            facing     = propFacingVal,
+            position   = {
+                x = tonumber(propEditInputs.pos_x:getText()) or 0,
+                z = tonumber(propEditInputs.pos_z:getText()) or 0,
+            },
+        }
+        if propEditIndex then
+            data.propellers[propEditIndex] = entry
+        else
+            data.propellers[#data.propellers + 1] = entry
+        end
+        setStatus("Saved: " .. id)
+        switchTo(propListFrame)   -- defined below, forward ref resolved at runtime
+    end)
+
+    addBtn(propEditFrame, "Cancel", 9, 12, 8, COL.btn, COL.btnTx, function()
+        switchTo(propListFrame)
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- PROPELLER LIST SCREEN
+-- ═══════════════════════════════════════════════════════════════════════════════
+propListFrame = root:addFrame()   -- used by propEditFrame callbacks above
+    :setPosition(1, 1):setSize(W, H - 1)
+    :setBackground(COL.bg):setVisible(false)
+allFrames[#allFrames+1] = propListFrame
+
+local propList
+
+local function refreshPropList()
+    propList:clear()
+    for _, p in ipairs(data.propellers) do
+        local lbl = string.format("%-14s %s", (p.id or ""):sub(1,14), p.facing or "?")
+        propList:addItem({text = lbl})
     end
 end
 
--- ── Boot ──────────────────────────────────────────────────────────────────────
-
-gui.clear()
-gui.header("Blimp Config")
-term.setCursorPos(1, 3)
-term.write("Opening modem...")
-local ok, side = comms.open()
-if ok then
-    term.setCursorPos(1, 4)
-    term.write("Modem on " .. tostring(side))
-else
-    term.setCursorPos(1, 4)
-    term.setTextColor(colours.red)
-    term.write("No modem — wireless disabled")
-    term.setTextColor(colours.white)
+local function openPropEdit(idx)
+    propEditIndex = idx
+    local p = idx and data.propellers[idx] or {}
+    propEditInputs.id:setText(p.id or "")
+    propEditInputs.controller:setText(p.controller or "")
+    propEditInputs.pos_x:setText(tostring(p.position and p.position.x or 0))
+    propEditInputs.pos_z:setText(tostring(p.position and p.position.z or 0))
+    propFacingVal = p.facing or "north"
+    refreshPropFacingBtn()
+    switchTo(propEditFrame)
 end
-sleep(0.6)
 
-mainMenu()
+do
+    addHeader(propListFrame, "Propellers")
+    propList = propListFrame:addList()
+        :setPosition(1, 2):setSize(W, H - 4)
+        :setBackground(COL.bg):setForeground(COL.tx)
+
+    local bRow = H - 2
+    addBtn(propListFrame, "[+Add]", 1,    bRow, 7,  COL.ok,     COL.okTx,     function()
+        openPropEdit(nil)
+    end)
+    addBtn(propListFrame, "[Edit]", 9,    bRow, 7,  COL.btn,    COL.btnTx,    function()
+        local idx = propList:getSelectedIndex()
+        if idx and idx > 0 then openPropEdit(idx) end
+    end)
+    addBtn(propListFrame, "[Del]",  17,   bRow, 7,  COL.danger, COL.dangerTx, function()
+        local idx = propList:getSelectedIndex()
+        if idx and idx > 0 then
+            local removed = data.propellers[idx].id
+            table.remove(data.propellers, idx)
+            refreshPropList()
+            setStatus("Deleted: " .. tostring(removed))
+        end
+    end)
+    addBtn(propListFrame, "[<]", 1, H-1, 4, COL.btn, COL.btnTx, function()
+        switchTo(menuFrame)
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- LIFT SOURCE EDIT SCREEN
+-- ═══════════════════════════════════════════════════════════════════════════════
+local liftEditFrame = root:addFrame()
+    :setPosition(1, 1):setSize(W, H - 1)
+    :setBackground(COL.bg):setVisible(false)
+allFrames[#allFrames+1] = liftEditFrame
+
+local liftEditInputs = {}
+local liftEditIndex  = nil
+
+do
+    addHeader(liftEditFrame, "Edit Lift Source")
+    addLbl(liftEditFrame, "Peripheral ID:", 1, 2, W, COL.sub)
+    liftEditInputs.id = addInp(liftEditFrame, 1, 3, W, "gas_provider_0")
+
+    addLbl(liftEditFrame, "Relative position from craft center:", 1, 4, W, COL.sub)
+    addLbl(liftEditFrame, "X:", 1, 5, 2, COL.sub)
+    liftEditInputs.pos_x = addInp(liftEditFrame, 3, 5, 10, "0")
+    addLbl(liftEditFrame, "Z:", 14, 5, 2, COL.sub)
+    liftEditInputs.pos_z = addInp(liftEditFrame, 16, 5, 10, "0")
+
+    addBtn(liftEditFrame, "[Pos Calc]", 1, 6, 11, COL.btn, COL.btnTx, function()
+        openPosCalc(
+            tonumber(liftEditInputs.pos_x:getText()) or 0,
+            tonumber(liftEditInputs.pos_z:getText()) or 0,
+            liftEditFrame,
+            function(rx, rz)
+                liftEditInputs.pos_x:setText(tostring(rx))
+                liftEditInputs.pos_z:setText(tostring(rz))
+            end
+        )
+    end)
+
+    addBtn(liftEditFrame, "Save", 1, 8, 6, COL.ok, COL.okTx, function()
+        local id = liftEditInputs.id:getText()
+        if id == "" then setStatus("ID is required"); return end
+        local entry = {
+            id       = id,
+            position = {
+                x = tonumber(liftEditInputs.pos_x:getText()) or 0,
+                z = tonumber(liftEditInputs.pos_z:getText()) or 0,
+            },
+        }
+        if liftEditIndex then
+            data.liftSources[liftEditIndex] = entry
+        else
+            data.liftSources[#data.liftSources + 1] = entry
+        end
+        setStatus("Saved: " .. id)
+        switchTo(liftListFrame)
+    end)
+    addBtn(liftEditFrame, "Cancel", 9, 8, 8, COL.btn, COL.btnTx, function()
+        switchTo(liftListFrame)
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- LIFT SOURCE LIST SCREEN
+-- ═══════════════════════════════════════════════════════════════════════════════
+liftListFrame = root:addFrame()
+    :setPosition(1, 1):setSize(W, H - 1)
+    :setBackground(COL.bg):setVisible(false)
+allFrames[#allFrames+1] = liftListFrame
+
+local liftList
+
+local function refreshLiftList()
+    liftList:clear()
+    for _, s in ipairs(data.liftSources) do
+        local pos = s.position or {x=0, z=0}
+        local lbl = string.format("%-14s x=%-3d z=%d",
+            (s.id or ""):sub(1,14), pos.x, pos.z)
+        liftList:addItem({text = lbl})
+    end
+end
+
+local function openLiftEdit(idx)
+    liftEditIndex = idx
+    local s = idx and data.liftSources[idx] or {}
+    liftEditInputs.id:setText(s.id or "")
+    liftEditInputs.pos_x:setText(tostring(s.position and s.position.x or 0))
+    liftEditInputs.pos_z:setText(tostring(s.position and s.position.z or 0))
+    switchTo(liftEditFrame)
+end
+
+do
+    addHeader(liftListFrame, "Lift Sources")
+    liftList = liftListFrame:addList()
+        :setPosition(1, 2):setSize(W, H - 4)
+        :setBackground(COL.bg):setForeground(COL.tx)
+
+    local bRow = H - 2
+    addBtn(liftListFrame, "[+Add]", 1,  bRow, 7, COL.ok,     COL.okTx,     function()
+        openLiftEdit(nil)
+    end)
+    addBtn(liftListFrame, "[Edit]", 9,  bRow, 7, COL.btn,    COL.btnTx,    function()
+        local idx = liftList:getSelectedIndex()
+        if idx and idx > 0 then openLiftEdit(idx) end
+    end)
+    addBtn(liftListFrame, "[Del]",  17, bRow, 7, COL.danger, COL.dangerTx, function()
+        local idx = liftList:getSelectedIndex()
+        if idx and idx > 0 then
+            local removed = data.liftSources[idx].id
+            table.remove(data.liftSources, idx)
+            refreshLiftList()
+            setStatus("Deleted: " .. tostring(removed))
+        end
+    end)
+    addBtn(liftListFrame, "[<]", 1, H-1, 4, COL.btn, COL.btnTx, function()
+        switchTo(menuFrame)
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- SENSORS SCREEN
+-- ═══════════════════════════════════════════════════════════════════════════════
+local sensorsFrame = root:addFrame()
+    :setPosition(1, 1):setSize(W, H - 1)
+    :setBackground(COL.bg):setVisible(false)
+allFrames[#allFrames+1] = sensorsFrame
+
+local sensInp = {}
+
+do
+    addHeader(sensorsFrame, "Sensors")
+
+    local rows = {
+        {lbl = "Altitude sensor:", key = "altitude", y = 2},
+        {lbl = "Gimbal sensor:",   key = "gimbal",   y = 4},
+        {lbl = "Velocity X:",      key = "vel0",     y = 6},
+        {lbl = "Velocity Y:",      key = "vel1",     y = 8},
+        {lbl = "Velocity Z:",      key = "vel2",     y = 10},
+    }
+    for _, r in ipairs(rows) do
+        addLbl(sensorsFrame, r.lbl, 1, r.y, W, COL.sub)
+        sensInp[r.key] = addInp(sensorsFrame, 1, r.y + 1, W, r.key)
+    end
+
+    addBtn(sensorsFrame, "Save", 1, 13, 6, COL.ok, COL.okTx, function()
+        data.sensors = {
+            altitude = sensInp.altitude:getText(),
+            gimbal   = sensInp.gimbal:getText(),
+            velocity = {
+                sensInp.vel0:getText(),
+                sensInp.vel1:getText(),
+                sensInp.vel2:getText(),
+            },
+        }
+        setStatus("Sensors saved")
+        switchTo(menuFrame)
+    end)
+    addBtn(sensorsFrame, "Cancel", 9, 13, 8, COL.btn, COL.btnTx, function()
+        switchTo(menuFrame)
+    end)
+end
+
+local function openSensors()
+    local s = data.sensors
+    sensInp.altitude:setText(s.altitude or "")
+    sensInp.gimbal:setText(s.gimbal or "")
+    sensInp.vel0:setText((s.velocity and s.velocity[1]) or "")
+    sensInp.vel1:setText((s.velocity and s.velocity[2]) or "")
+    sensInp.vel2:setText((s.velocity and s.velocity[3]) or "")
+    switchTo(sensorsFrame)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- INPUT DEVICES SCREEN
+-- ═══════════════════════════════════════════════════════════════════════════════
+local inputDevFrame = root:addFrame()
+    :setPosition(1, 1):setSize(W, H - 1)
+    :setBackground(COL.bg):setVisible(false)
+allFrames[#allFrames+1] = inputDevFrame
+
+local inpDevInp = {}
+
+do
+    addHeader(inputDevFrame, "Input Devices")
+
+    local rows = {
+        {lbl="Steering wheel:",   key="steeringWheel",       y=2},
+        {lbl="Throttle lever:",   key="throttleLever",       y=4},
+        {lbl="Alt rate/unit:",    key="altitudeRatePerUnit", y=6},
+        {lbl="Max translation:",  key="maxTranslation",      y=8},
+        {lbl="Max yaw:",          key="maxYaw",              y=10},
+    }
+    for _, r in ipairs(rows) do
+        addLbl(inputDevFrame, r.lbl, 1, r.y, W, COL.sub)
+        inpDevInp[r.key] = addInp(inputDevFrame, 1, r.y + 1, W, r.key)
+    end
+
+    addBtn(inputDevFrame, "Save", 1, 13, 6, COL.ok, COL.okTx, function()
+        data.input = {
+            steeringWheel       = inpDevInp.steeringWheel:getText(),
+            throttleLever       = inpDevInp.throttleLever:getText(),
+            altitudeRatePerUnit = tonumber(inpDevInp.altitudeRatePerUnit:getText()) or 0.5,
+            maxTranslation      = tonumber(inpDevInp.maxTranslation:getText()) or 0.8,
+            maxYaw              = tonumber(inpDevInp.maxYaw:getText()) or 0.6,
+        }
+        setStatus("Input devices saved")
+        switchTo(menuFrame)
+    end)
+    addBtn(inputDevFrame, "Cancel", 9, 13, 8, COL.btn, COL.btnTx, function()
+        switchTo(menuFrame)
+    end)
+end
+
+local function openInputDev()
+    local i = data.input
+    inpDevInp.steeringWheel:setText(i.steeringWheel or "")
+    inpDevInp.throttleLever:setText(i.throttleLever or "")
+    inpDevInp.altitudeRatePerUnit:setText(tostring(i.altitudeRatePerUnit or 0.5))
+    inpDevInp.maxTranslation:setText(tostring(i.maxTranslation or 0.8))
+    inpDevInp.maxYaw:setText(tostring(i.maxYaw or 0.6))
+    switchTo(inputDevFrame)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- MAIN MENU SCREEN
+-- ═══════════════════════════════════════════════════════════════════════════════
+menuFrame = root:addFrame()
+    :setPosition(1, 1):setSize(W, H - 1)
+    :setBackground(COL.bg)
+allFrames[#allFrames+1] = menuFrame
+
+local connLabel
+
+do
+    addHeader(menuFrame, "Blimp Config Tool")
+
+    connLabel = addLbl(menuFrame, "Ship: Not connected", 1, 2, W, COL.noconn)
+
+    local function navBtn(label, y, cb)
+        return addBtn(menuFrame, label, 1, y, W, COL.btn, COL.btnTx, cb)
+    end
+
+    navBtn("Connect to ship",  3,  function()
+        setStatus("Scanning...")
+        local id = comms.findShip()
+        if id then
+            connLabel:setText("Ship: #" .. id .. " connected")
+            connLabel:setForeground(COL.conn)
+            setStatus("Connected to ship #" .. id)
+        else
+            connLabel:setText("Ship: Not found")
+            connLabel:setForeground(COL.noconn)
+            setStatus("No ship responded (timeout)")
+        end
+    end)
+
+    navBtn("Lift sources",     4,  function()
+        refreshLiftList(); switchTo(liftListFrame)
+    end)
+    navBtn("Propellers",       5,  function()
+        refreshPropList(); switchTo(propListFrame)
+    end)
+    navBtn("Sensors",          6,  function() openSensors() end)
+    navBtn("Input devices",    7,  function() openInputDev() end)
+
+    -- divider
+    addLbl(menuFrame, string.rep("\140", W), 1, 8, W, COL.btn)
+
+    navBtn("Push to ship",     9,  function()
+        if not comms.shipId() then setStatus("Connect first"); return end
+        local ok, err = comms.setConfig(data)
+        setStatus(ok and "Pushed to ship OK" or "Push failed: " .. tostring(err))
+    end)
+    navBtn("Pull from ship",   10, function()
+        if not comms.shipId() then setStatus("Connect first"); return end
+        local d, err = comms.getConfig()
+        if d then data = d; setStatus("Pulled from ship OK")
+        else setStatus("Pull failed: " .. tostring(err)) end
+    end)
+    navBtn("Save locally",     11, function()
+        local f = fs.open("config_data.lua", "w")
+        f.write("return " .. textutils.serialize(data))
+        f.close()
+        setStatus("Saved config_data.lua")
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- BOOT
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Load local config if it exists
+if fs.exists("config_data.lua") then
+    local f   = fs.open("config_data.lua", "r")
+    local src = f.readAll()
+    f.close()
+    local loaded = textutils.unserialize(src)
+    if type(loaded) == "table" then
+        data = loaded
+        setStatus("Loaded local config_data.lua")
+    end
+end
+
+-- Open wireless modem
+local modemOk, modemSide = comms.open()
+if modemOk then
+    setStatus("Modem open on " .. tostring(modemSide))
+else
+    setStatus("No wireless modem found")
+end
+
+-- Show the main menu
+switchTo(menuFrame)
+
+basalt.run()
