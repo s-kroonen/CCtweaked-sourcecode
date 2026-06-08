@@ -11,7 +11,7 @@ end
 
 -- Updates state.sensors with altitude and verticalSpeed.
 function AltitudeSensor:read(sensors)
-    sensors.altitude      = self._p.getAltitude()
+    sensors.altitude      = self._p.getHeight()
     sensors.verticalSpeed = self._p.getVerticalSpeed()
 end
 
