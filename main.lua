@@ -3,6 +3,7 @@
 
 local config       = require("config")
 local state        = require("state")
+local ConfigServer = require("ship.config_server")
 local GasProvider  = require("peripherals.GasProvider")
 local Propeller    = require("peripherals.Propeller")
 local AltitudeSensor = require("sensors.AltitudeSensor")
@@ -157,5 +158,6 @@ parallel.waitForAll(
     function() altLoop:run() end,
     function() moveLoop:run() end,
     function() inpLoop:run() end,
-    function() statusDisplay() end
+    function() statusDisplay() end,
+    function() ConfigServer.run() end
 )

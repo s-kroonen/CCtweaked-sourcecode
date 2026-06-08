@@ -1,29 +1,22 @@
--- install.lua
--- Run once in-game to download the full blimp controller from GitHub.
--- Usage:  wget run https://raw.githubusercontent.com/s-kroonen/CCtweaked-sourcecode/master/install.lua
+-- terminal/install.lua
+-- Run on the pocket computer once to download the config tool from GitHub.
+-- Usage:  wget run https://raw.githubusercontent.com/s-kroonen/CCtweaked-sourcecode/master/terminal/install.lua
 
-local REPO  = "https://raw.githubusercontent.com/s-kroonen/CCtweaked-sourcecode/master"
+local REPO = "https://raw.githubusercontent.com/s-kroonen/CCtweaked-sourcecode/master"
 
 local FILES = {
-    "main.lua",
-    "config.lua",
-    "state.lua",
-    "core/PID.lua",
-    "core/AltitudeLoop.lua",
-    "core/MovementLoop.lua",
-    "core/InputLoop.lua",
-    "peripherals/GasProvider.lua",
-    "peripherals/Propeller.lua",
-    "sensors/AltitudeSensor.lua",
-    "sensors/GimbalSensor.lua",
-    "sensors/VelocitySensor.lua",
-    "ship/config_server.lua",
+    "terminal/main.lua",
+    "terminal/gui.lua",
+    "terminal/comms.lua",
 }
+
+-- Entry point: run as  terminal/main
+local STARTUP = [[shell.run("terminal/main")]]
 
 local function mkdir(path)
     local parts = {}
     for p in path:gmatch("[^/]+") do parts[#parts+1] = p end
-    table.remove(parts)  -- drop filename
+    table.remove(parts)
     local cur = ""
     for _, p in ipairs(parts) do
         cur = cur == "" and p or (cur .. "/" .. p)
@@ -31,6 +24,7 @@ local function mkdir(path)
     end
 end
 
+print("Installing blimp config terminal...")
 local ok, fail = 0, 0
 for _, path in ipairs(FILES) do
     local url  = REPO .. "/" .. path
@@ -49,7 +43,12 @@ for _, path in ipairs(FILES) do
     end
 end
 
+-- Write startup file so the tool launches on boot
+local sf = fs.open("startup.lua", "w")
+sf.write(STARTUP)
+sf.close()
+
 print(string.format("\nDone: %d ok, %d failed.", ok, fail))
 if fail == 0 then
-    print("Run:  main")
+    print("Reboot to launch, or run:  terminal/main")
 end

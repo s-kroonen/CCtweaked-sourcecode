@@ -25,8 +25,14 @@ $items = @(
     "state.lua",
     "core",
     "peripherals",
-    "sensors"
+    "sensors",
+    "ship"
 )
+
+# Terminal pocket computer (optional second computer ID)
+$termId     = $ComputerId + 1   # change if your terminal has a different id
+$termTarget = "$WorldPath\computercraft\computer\$termId"
+$termItems  = @("terminal")
 
 foreach ($item in $items) {
     $src = Join-Path $PSScriptRoot $item
@@ -45,4 +51,21 @@ foreach ($item in $items) {
 }
 
 Write-Host ""
-Write-Host "Sync complete -> $target"
+Write-Host "Ship sync complete -> $target"
+
+# ── Terminal computer ──────────────────────────────────────────────────────────
+if (Test-Path (Join-Path $PSScriptRoot "terminal")) {
+    if (-not (Test-Path $termTarget)) {
+        New-Item -ItemType Directory -Force $termTarget | Out-Null
+    }
+    foreach ($item in $termItems) {
+        $src  = Join-Path $PSScriptRoot $item
+        $dest = Join-Path $termTarget $item
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        Get-ChildItem $src -Filter "*.lua" | ForEach-Object {
+            Copy-Item $_.FullName (Join-Path $dest $_.Name) -Force
+            Write-Host "  copied $item\$($_.Name) -> terminal"
+        }
+    }
+    Write-Host "Terminal sync complete -> $termTarget"
+}
