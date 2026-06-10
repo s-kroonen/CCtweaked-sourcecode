@@ -2,7 +2,7 @@
 -- Rednet helpers. Auto-detects the first wireless (ender) modem.
 
 local PROTOCOL = "blimp_cfg"
-local TIMEOUT  = 3   -- seconds
+local TIMEOUT  = 5   -- seconds
 
 local comms    = {}
 local _shipId  = nil
