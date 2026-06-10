@@ -10,8 +10,8 @@ if not fs.exists("basalt.lua") and not fs.exists("basalt") then
     return
 end
 
-local basalt = require("basalt")
-local comms  = require("terminal.comms")
+local basalt = require("./basalt")
+local comms  = require("comms")
 
 local W, H = term.getSize()
 
