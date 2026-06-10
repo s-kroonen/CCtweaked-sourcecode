@@ -12,9 +12,13 @@ if not ok or type(data) ~= "table" then
     print("[config] No config_data.lua found; using empty peripheral lists.")
 end
 
-config.liftSources = data.liftSources or {}
-config.propellers  = data.propellers  or {}
-config.sensors     = data.sensors     or {
+config.liftSources  = data.liftSources  or {}
+config.propellers   = data.propellers   or {}
+-- Direction the FRONT of the craft faces in the world at build orientation.
+-- Rotates forward/right command frame so player input always matches craft.
+-- Valid values: "north" | "south" | "east" | "west"
+config.craftFacing  = data.craftFacing  or "north"
+config.sensors      = data.sensors      or {
     altitude = "altitude_sensor_0",
     gimbal   = "gimbal_sensor_0",
     velocity = {},

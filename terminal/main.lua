@@ -17,8 +17,9 @@ local W, H = term.getSize()
 
 -- ── Config data (working copy in memory) ──────────────────────────────────────
 local data = {
-    liftSources = {},
-    propellers  = {},
+    liftSources  = {},
+    propellers   = {},
+    craftFacing  = "north",
     sensors = {
         altitude = "altitude_sensor_0",
         gimbal   = "gimbal_sensor_0",
@@ -32,6 +33,30 @@ local data = {
         maxYaw              = 0.6,
     },
 }
+
+-- Ensure all required fields exist after loading from any source.
+local HORIZ_FACINGS = {"north", "south", "east", "west"}
+local function sanitizeData(d)
+    d.liftSources = d.liftSources or {}
+    d.propellers  = d.propellers  or {}
+    d.sensors     = d.sensors     or {}
+    d.sensors.altitude = d.sensors.altitude or ""
+    d.sensors.gimbal   = d.sensors.gimbal   or ""
+    d.sensors.velocity = d.sensors.velocity or {}
+    d.input = d.input or {}
+    d.input.steeringWheel       = d.input.steeringWheel       or ""
+    d.input.throttleLever       = d.input.throttleLever       or ""
+    d.input.altitudeRatePerUnit = d.input.altitudeRatePerUnit or 0.5
+    d.input.maxTranslation      = d.input.maxTranslation      or 0.8
+    d.input.maxYaw              = d.input.maxYaw              or 0.6
+    -- Validate craftFacing — fall back to "north" if unknown
+    local validFacing = false
+    for _, f in ipairs(HORIZ_FACINGS) do
+        if d.craftFacing == f then validFacing = true; break end
+    end
+    if not validFacing then d.craftFacing = "north" end
+    return d
+end
 
 -- ── Colours ───────────────────────────────────────────────────────────────────
 local COL = {
@@ -580,24 +605,44 @@ do
     -- divider
     addLbl(menuFrame, string.rep("\140", W), 1, 8, W, COL.btn)
 
-    navBtn("Push to ship",     9,  function()
+    -- Craft facing cycle button — updates in-place
+    local facingBtn = menuFrame:addButton()
+        :setPosition(1, 9):setSize(W, 1)
+        :setBackground(COL.field):setForeground(COL.tx)
+        :setText("Craft facing: " .. data.craftFacing .. " (click to change)")
+
+    local function nextHorizFacing(f)
+        for i, v in ipairs(HORIZ_FACINGS) do
+            if v == f then return HORIZ_FACINGS[i % #HORIZ_FACINGS + 1] end
+        end
+        return "north"
+    end
+
+    facingBtn:onClick(function()
+        data.craftFacing = nextHorizFacing(data.craftFacing)
+        facingBtn:setText("Craft facing: " .. data.craftFacing .. " (click to change)")
+    end)
+
+    navBtn("Push to ship",     10, function()
         if not comms.shipId() then setStatus("Connect first"); return end
         setStatus("Pushing config to ship...")
         local ok, err = comms.setConfig(data)
         setStatus(ok and "Pushed OK" or "Push failed: " .. tostring(err))
     end)
-    navBtn("Pull from ship",   10, function()
+    navBtn("Pull from ship",   11, function()
         if not comms.shipId() then setStatus("Connect first"); return end
         setStatus("Pulling config from ship...")
         local d, err = comms.getConfig()
         if d then
-            data = d
-            setStatus("Pulled OK — ")
+            data = sanitizeData(d)
+            facingBtn:setText("Craft facing: " .. data.craftFacing .. " (click to change)")
+            setStatus("Pulled OK — " .. #data.propellers .. " props, "
+                      .. #data.liftSources .. " lift")
         else
             setStatus("Pull failed: " .. tostring(err))
         end
     end)
-    navBtn("Save locally",     11, function()
+    navBtn("Save locally",     12, function()
         local f = fs.open("config_data.lua", "w")
         f.write("return " .. textutils.serialize(data))
         f.close()
@@ -611,12 +656,12 @@ end
 
 -- Load local config if it exists
 if fs.exists("config_data.lua") then
-    local f   = fs.open("config_data.lua", "r")
-    local src = f.readAll()
+    local f      = fs.open("config_data.lua", "r")
+    local src    = f.readAll()
     f.close()
     local loaded = textutils.unserialize(src)
     if type(loaded) == "table" then
-        data = loaded
+        data = sanitizeData(loaded)
         setStatus("Loaded local config_data.lua")
     end
 end

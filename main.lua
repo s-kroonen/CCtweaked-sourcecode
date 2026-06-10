@@ -56,7 +56,7 @@ local upProps   = {}   -- up-facing props used by AltitudeLoop
 local moveProps = {}   -- all other props used by MovementLoop
 
 for _, cfg in ipairs(config.propellers) do
-    local ok, obj = pcall(Propeller.new, cfg, config.maxPropRPM)
+    local ok, obj = pcall(Propeller.new, cfg, config.maxPropRPM, config.craftFacing)
     if ok then
         allProps[#allProps + 1] = obj
         if cfg.facing == "up" or cfg.facing == "down" then
