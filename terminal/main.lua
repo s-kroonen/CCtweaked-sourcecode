@@ -109,6 +109,7 @@ local statusLbl = root:addLabel()
 
 local function setStatus(msg)
     statusLbl:setText(tostring(msg):sub(1, W))
+    sleep(0)   -- yield so Basalt's event loop can flush the render before we continue
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════════
@@ -554,17 +555,17 @@ do
     end
 
     navBtn("Connect to ship",  3,  function()
-        setStatus("Scanning...")
+        setStatus("Scanning for ship...")   -- renders immediately via sleep(0) in setStatus
         local id = comms.findShip()
         if id then
             connLabel:setText("Ship: #" .. id .. " connected")
             connLabel:setForeground(COL.conn)
-            setStatus("Connected to ship #" .. id)
         else
             connLabel:setText("Ship: Not found")
             connLabel:setForeground(COL.noconn)
-            setStatus("No ship responded (timeout)")
         end
+        setStatus(id and "Connected to ship #" .. id or "No ship responded (timeout)")
+        -- setStatus includes sleep(0) so the connLabel colour change also renders now
     end)
 
     navBtn("Lift sources",     4,  function()
@@ -581,14 +582,20 @@ do
 
     navBtn("Push to ship",     9,  function()
         if not comms.shipId() then setStatus("Connect first"); return end
+        setStatus("Pushing config to ship...")
         local ok, err = comms.setConfig(data)
-        setStatus(ok and "Pushed to ship OK" or "Push failed: " .. tostring(err))
+        setStatus(ok and "Pushed OK" or "Push failed: " .. tostring(err))
     end)
     navBtn("Pull from ship",   10, function()
         if not comms.shipId() then setStatus("Connect first"); return end
+        setStatus("Pulling config from ship...")
         local d, err = comms.getConfig()
-        if d then data = d; setStatus("Pulled from ship OK")
-        else setStatus("Pull failed: " .. tostring(err)) end
+        if d then
+            data = d
+            setStatus("Pulled OK — ")
+        else
+            setStatus("Pull failed: " .. tostring(err))
+        end
     end)
     navBtn("Save locally",     11, function()
         local f = fs.open("config_data.lua", "w")
